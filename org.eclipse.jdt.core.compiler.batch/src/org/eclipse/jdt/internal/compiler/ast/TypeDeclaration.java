@@ -24,10 +24,6 @@
  *******************************************************************************/
 package org.eclipse.jdt.internal.compiler.ast;
 
-import static org.eclipse.jdt.internal.compiler.ast.ConstructorDeclaration.ConstructorFlowAnalysisMode.EPILOGUE_ANALYSIS;
-import static org.eclipse.jdt.internal.compiler.ast.ConstructorDeclaration.ConstructorFlowAnalysisMode.FULL_ANALYSIS;
-import static org.eclipse.jdt.internal.compiler.ast.ConstructorDeclaration.ConstructorFlowAnalysisMode.PROLOGUE_ANALYSIS;
-
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -48,7 +44,6 @@ import org.eclipse.jdt.internal.compiler.flow.InitializationFlowContext;
 import org.eclipse.jdt.internal.compiler.flow.UnconditionalDualFlowInfo;
 import org.eclipse.jdt.internal.compiler.flow.UnconditionalFlowInfo;
 import org.eclipse.jdt.internal.compiler.impl.CompilerOptions;
-import org.eclipse.jdt.internal.compiler.impl.JavaFeature;
 import org.eclipse.jdt.internal.compiler.impl.ReferenceContext;
 import org.eclipse.jdt.internal.compiler.impl.StringConstant;
 import org.eclipse.jdt.internal.compiler.lookup.*;
@@ -747,47 +742,6 @@ private void internalAnalyseCode(FlowContext flowContext, FlowInfo flowInfo) {
 	FlowInfo nonStaticFieldInfo = flowInfo.unconditionalFieldLessCopy();	// discards info about fields of inclosing classes
 	FlowInfo staticFieldInfo = flowInfo.unconditionalFieldLessCopy();
 
-	if (JavaFeature.FLEXIBLE_CONSTRUCTOR_BODIES.isSupported(this.scope.compilerOptions())) {
-		if (this.methods != null) {
-			// collect field initializations happening in constructor prologues
-			FlowInfo prologueInfo = null;
-			boolean allConstructorsHavePrologue = true;
-			for (AbstractMethodDeclaration method : this.methods) {
-				if (method instanceof ConstructorDeclaration constructor) {
-					FlowInfo ctorInfo = flowInfo.unconditionalFieldLessCopy();
-					constructor.analyseCode(this.scope, initializerContext, ctorInfo, ctorInfo.reachMode(), PROLOGUE_ANALYSIS);
-					ctorInfo = constructor.getPrologueInfo();
-					if (ctorInfo == null) {
-						allConstructorsHavePrologue = false;
-					} else if (ctorInfo.hasInits()) {
-						if (prologueInfo == null)
-							prologueInfo = ctorInfo.copy();
-						else
-							prologueInfo = prologueInfo.mergeDefiniteInitsWith(ctorInfo.unconditionalInits()); // will only evaluate field inits below
-					}
-				}
-			}
-			if (prologueInfo != null) {
-				if (allConstructorsHavePrologue) {
-					// field initializers should see inits from ctor prologues:
-					for (FieldBinding field : this.binding.fields()) {
-						if (prologueInfo.isDefinitelyAssigned(field)) {
-							nonStaticFieldInfo.markAsDefinitelyAssigned(field);
-						} else if (prologueInfo.isPotentiallyAssigned(field)) {
-							// mimic missing method markAsPotentiallyAssigned(field):
-							UnconditionalFlowInfo assigned = FlowInfo.initial(this.maxFieldCount);
-							assigned.markAsDefinitelyAssigned(field);
-							nonStaticFieldInfo.addPotentialInitializationsFrom(assigned);
-						}
-					}
-				} else {
-					// need to keep variants with and without prologue info separate:
-					nonStaticFieldInfo = new DualFlowInfo(nonStaticFieldInfo, prologueInfo);
-				}
-			}
-		}
-	}
-
 	if (this.fields != null) {
 		for (FieldDeclaration field : this.fields) {
 			if (field.isStatic()) {
@@ -807,6 +761,9 @@ private void internalAnalyseCode(FlowContext flowContext, FlowInfo flowInfo) {
 					staticFieldInfo = FlowInfo.initial(this.maxFieldCount).setReachMode(FlowInfo.UNREACHABLE_OR_DEAD);
 				}
 			} else {
+				if (field instanceof Initializer || field.initialization != null)
+					continue;
+
 				if ((nonStaticFieldInfo.tagBits & FlowInfo.UNREACHABLE_OR_DEAD) != 0)
 					field.bits &= ~ASTNode.IsReachable;
 
@@ -869,8 +826,7 @@ private void internalAnalyseCode(FlowContext flowContext, FlowInfo flowInfo) {
 			if (method instanceof Clinit clinit) {
 				clinit.analyseCode(this.scope, staticInitializerContext, staticFieldInfo.unconditionalInits().discardNonFieldInitializations().addInitializationsFrom(outerInfo));
 			} else if (method instanceof ConstructorDeclaration cd) {
-				cd.analyseCode(this.scope, initializerContext, constructorInfo.copy(), flowInfo.reachMode(),
-						cd.getPrologueInfo() != null ? EPILOGUE_ANALYSIS : FULL_ANALYSIS);
+				cd.analyseCode(this.scope, initializerContext,constructorInfo.copy(), flowInfo.reachMode());
 			} else { // regular method
 				// JUnit 5 only accepts methods without arguments for method sources
 				if (method.arguments == null && jUnitMethodSourceValues.includes(method.selector) && method.binding != null) {

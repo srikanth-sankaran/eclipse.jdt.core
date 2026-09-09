@@ -29,7 +29,7 @@ public class SuperAfterStatementsTest extends AbstractRegressionTest9 {
 //		TESTS_NUMBERS = new int [] { 1 };
 //		TESTS_RANGE = new int[] { 1, -1 };
 //		TESTS_NAMES = new String[] { "testComplexNesting_OK" };
-//		TESTS_NAMES = new String[] { "test037" };
+		TESTS_NAMES = new String[] { "testIssue5374" };
 	}
 	private String extraLibPath;
 	public static Class<?> testClass() {
@@ -2988,19 +2988,17 @@ public class SuperAfterStatementsTest extends AbstractRegressionTest9 {
 				}
 				"""
 			},
-			"""
-			----------
-			1. ERROR in X.java (at line 4)
-				fin1 = 0;
-				^^^^
-			The final field fin1 may already have been assigned
-			----------
-			4. ERROR in X.java (at line 10)
-				fin2 = 11;
-				^^^^
-			The final field fin2 may already have been assigned
-			----------
-			""");
+			"----------\n" +
+			"1. ERROR in X.java (at line 9)\n" +
+			"	this(fin1 = 10);\n" +
+			"	^^^^^^^^^^^^^^^^\n" +
+			"The final field fin1 may already have been assigned\n" +
+			"----------\n" +
+			"2. ERROR in X.java (at line 10)\n" +
+			"	fin2 = 11;\n" +
+			"	^^^^\n" +
+			"The final field fin2 may already have been assigned\n" +
+			"----------\n");
 	}
 
 	public void testGH3748b() {
@@ -3022,19 +3020,17 @@ public class SuperAfterStatementsTest extends AbstractRegressionTest9 {
 				}
 				"""
 			},
-			"""
-			----------
-			1. ERROR in X.java (at line 5)
-				fin1 = 0;
-				^^^^
-			The final field fin1 may already have been assigned
-			----------
-			3. ERROR in X.java (at line 10)
-				fin2 = 11;
-				^^^^
-			The final field fin2 may already have been assigned
-			----------
-			""");
+			"----------\n" +
+			"1. ERROR in X.java (at line 9)\n" +
+			"	this(fin1 = 10);\n" +
+			"	^^^^^^^^^^^^^^^^\n" +
+			"The final field fin1 may already have been assigned\n" +
+			"----------\n" +
+			"2. ERROR in X.java (at line 10)\n" +
+			"	fin2 = 11;\n" +
+			"	^^^^\n" +
+			"The final field fin2 may already have been assigned\n" +
+			"----------\n");
 	}
 	public void testGH3687c() {
 		runNegativeTest(new String[] {
@@ -3828,6 +3824,41 @@ public class SuperAfterStatementsTest extends AbstractRegressionTest9 {
 			"	final String s2;\n" +
 			"	             ^^\n" +
 			"The blank final field s2 may not have been initialized\n" +
+			"----------\n");
+	}
+
+	// https://github.com/eclipse-jdt/eclipse.jdt.core/issues/5378
+	// ECJ fails to complain about a flexible constructor failing to initialize a blank final variable.
+	public void testIssue5378() {
+		runNegativeTest(new String[] {
+			"X.java",
+			"""
+			public class X {
+			    final String s;
+
+			    X(String s0) {
+			        s = s0;
+			        super();
+			    }
+
+			    X() {
+			        System.out.println("Blah");
+			        super();
+			    }
+
+			    public static void main(String... args) {
+			        System.out.print(new X("OK").s);
+			    }
+			}
+			"""
+
+
+			},
+			"----------\n" +
+			"1. ERROR in X.java (at line 9)\n" +
+			"	X() {\n" +
+			"	^^^\n" +
+			"The blank final field s may not have been initialized\n" +
 			"----------\n");
 	}
 }

@@ -41,7 +41,6 @@ import org.eclipse.jdt.internal.compiler.codegen.CodeStream;
 import org.eclipse.jdt.internal.compiler.codegen.Opcodes;
 import org.eclipse.jdt.internal.compiler.flow.FlowContext;
 import org.eclipse.jdt.internal.compiler.flow.FlowInfo;
-import org.eclipse.jdt.internal.compiler.impl.Constant;
 import org.eclipse.jdt.internal.compiler.impl.JavaFeature;
 import org.eclipse.jdt.internal.compiler.lookup.*;
 
@@ -120,20 +119,6 @@ public class ExplicitConstructorCall extends Statement implements Invocation {
 			((MethodScope) currentScope).isConstructorCall = false;
 			currentScope.leaveEarlyConstructionContext();
 		}
-	}
-
-	public boolean hasArgumentNeedingAnalysis() {
-		if (this.arguments != null) {
-			for (Expression arg : this.arguments) {
-				if (arg.constant != Constant.NotAConstant)
-					continue;
-				if (arg instanceof SingleNameReference ref
-						&& ref.binding != null && ref.binding.isParameter())
-					continue;
-				return true;
-			}
-		}
-		return false;
 	}
 
 	/**

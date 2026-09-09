@@ -30,10 +30,6 @@
  *******************************************************************************/
 package org.eclipse.jdt.internal.compiler.ast;
 
-import static org.eclipse.jdt.internal.compiler.ast.ConstructorDeclaration.ConstructorFlowAnalysisMode.EPILOGUE_ANALYSIS;
-import static org.eclipse.jdt.internal.compiler.ast.ConstructorDeclaration.ConstructorFlowAnalysisMode.FULL_ANALYSIS;
-import static org.eclipse.jdt.internal.compiler.ast.ConstructorDeclaration.ConstructorFlowAnalysisMode.PROLOGUE_ANALYSIS;
-
 import java.util.ArrayList;
 import java.util.List;
 import org.eclipse.jdt.core.compiler.CategorizedProblem;
@@ -63,17 +59,10 @@ public class ConstructorDeclaration extends AbstractMethodDeclaration {
 
 	public TypeParameter[] typeParameters;
 
-	private ExceptionHandlingFlowContext prologueContext;
-	private FlowInfo prologueInfo;
-
 	public AbstractVariableDeclaration [] protoArguments; // for compact constructors; we don't have a back pointer to declaring class.
 
 public ConstructorDeclaration(CompilationResult compilationResult){
 	super(compilationResult);
-}
-
-FlowInfo getPrologueInfo() {
-	return this.prologueInfo;
 }
 
 private void complainOnUnusedPrivateConstructor() {
@@ -126,24 +115,35 @@ private void complainOnUnusedTypeVariables() {
 	}
 }
 
-enum ConstructorFlowAnalysisMode {
+private FlowInfo analyzeFieldInitializations(ClassScope classScope, InitializationFlowContext initializerFlowContext, FlowInfo flowInfo) {
 
-	/** Analyse entire body in one go: used for Java 24- as the ONLY phase. Or the phase 2 of 2 for Java 25+ WHEN constructor has NO real/relevant prologue */
-	FULL_ANALYSIS,
+	TypeDeclaration typeDeclaration = classScope.referenceContext;
+	FieldDeclaration [] fields = typeDeclaration.fields;
+	if (fields != null) {
+		for (FieldDeclaration field : fields) {
+			if (field.isStatic())
+				continue;
+			if (field instanceof Initializer || field.initialization != null) {
+				if ((flowInfo.tagBits & FlowInfo.UNREACHABLE_OR_DEAD) != 0)
+					field.bits &= ~ASTNode.IsReachable;
 
-	/** Analyse up to chaining constructor invocation (although JEP 513 defines prologue to not include the call itself)
-	 *  Evaluation of the arguments of the chaining constructor invocation is in early construction context/prologue.
-	 *  Phase 1 of 2 for Java 25+ : May do nothing and just return quickly if there is no real action in the prologue
-	 */
-	PROLOGUE_ANALYSIS,
+				initializerFlowContext.handledExceptions = Binding.ANY_EXCEPTION; // tolerate them all, and record them
 
-	/** Skip the prologue and analyse only the statements after the explicit constructor call
-	 *  (One possible) Phase 2 of 2 for Java 25+
-	 */
-	EPILOGUE_ANALYSIS
+				flowInfo = field.analyseCode(typeDeclaration.initializerScope, initializerFlowContext, flowInfo);
+				// in case the initializer is not reachable, use a reinitialized flowInfo and enter a fake reachable
+				// branch, since the previous initializer already got the blame.
+				if (flowInfo == FlowInfo.DEAD_END) {
+					typeDeclaration.initializerScope.problemReporter().initializerMustCompleteNormally(field);
+					flowInfo = FlowInfo.initial(typeDeclaration.maxFieldCount).setReachMode(FlowInfo.UNREACHABLE_OR_DEAD);
+				}
+			}
+		}
+	}
+
+	return flowInfo;
 }
 
-public void analyseCode(ClassScope classScope, InitializationFlowContext initializerFlowContext, FlowInfo flowInfo, int initialReachMode, ConstructorFlowAnalysisMode mode) {
+public void analyseCode(ClassScope classScope, InitializationFlowContext initializerFlowContext, FlowInfo flowInfo, int initialReachMode) {
 
 	// FlowContext and FlowInfo produced during PROLOGUE_ANALYSIS will be held in fields prologueContext and prologueInfo for use during EPILOGUE_ANALYSIS
 	// prologueInfo is furthermore assumed to happen *before* any field initializers, see its use in TypeDeclaration.internalAnalyseCode()
@@ -152,60 +152,27 @@ public void analyseCode(ClassScope classScope, InitializationFlowContext initial
 		return;
 
 	try {
-		ExplicitConstructorCall lateConstructorCall = getLateConstructorCall();
-		ExplicitConstructorCall earlyConstructorCall = getEarlyConstructorCall();
-		boolean hasArgumentNeedingAnalysis = earlyConstructorCall != null && earlyConstructorCall.hasArgumentNeedingAnalysis();
-		if (mode == PROLOGUE_ANALYSIS
-				&& lateConstructorCall == null
-				&& (!hasArgumentNeedingAnalysis)) {
-			return; // no relevant prologue present
-		}
-
 		int nonStaticFieldInfoReachMode = flowInfo.reachMode();
 		ExceptionHandlingFlowContext constructorContext;
-		if (mode == PROLOGUE_ANALYSIS || mode == FULL_ANALYSIS) {
-			constructorContext =
-				new ExceptionHandlingFlowContext(
-					initializerFlowContext.parent,
-					this,
-					this.binding.thrownExceptions,
-					initializerFlowContext,
-					this.scope,
-					FlowInfo.DEAD_END);
-			if (mode == PROLOGUE_ANALYSIS)
-				this.prologueContext = constructorContext; // save for EPILOGUE_ANALYSIS
+		constructorContext =
+			new ExceptionHandlingFlowContext(
+				initializerFlowContext.parent,
+				this,
+				this.binding.thrownExceptions,
+				initializerFlowContext,
+				this.scope,
+				FlowInfo.DEAD_END);
 
-			// nullity, owning and mark as assigned
-			analyseArguments(this.scope, flowInfo, initializerFlowContext, arguments(true), this.binding);
-		} else {
-			// Retrieve flow info and flow context stashed away during prologue analysis, skip prologue (below) and continue analysis.
-			constructorContext = this.prologueContext;
-			flowInfo = this.prologueInfo.addInitializationsFrom(flowInfo);
-		}
-
+		// nullity, owning and mark as assigned
+		analyseArguments(this.scope, flowInfo, initializerFlowContext, arguments(true), this.binding);
 		ExplicitConstructorCall constructorCall = null;
 		if (this.statements != null) {
 			CompilerOptions compilerOptions = this.scope.compilerOptions();
 			boolean enableSyntacticNullAnalysisForFields = compilerOptions.enableSyntacticNullAnalysisForFields;
 			int complaintLevel = (nonStaticFieldInfoReachMode & FlowInfo.UNREACHABLE) == 0 ? Statement.NOT_COMPLAINED : Statement.COMPLAINED_FAKE_REACHABLE;
-			boolean inPrologue = true;
 			this.scope.enterEarlyConstructionContext();
 			flowInfo.setReachMode(initialReachMode);
 			for (Statement stat : this.statements) {
-				if (stat instanceof ExplicitConstructorCall ecc)
-					constructorCall = ecc;
-				if (mode == EPILOGUE_ANALYSIS && inPrologue) {
-					if (stat == constructorCall) {	// if true post this is where we start analysing
-						markFieldsAsInitializedAfterThisCall(constructorCall, flowInfo);
-						inPrologue = false;
-						flowInfo.setReachMode(nonStaticFieldInfoReachMode);
-						this.scope.leaveEarlyConstructionContext();
-					}
-					continue; // skip statements already processed during PROLOGUE analysis
-				}
-				if (mode == PROLOGUE_ANALYSIS && stat == constructorCall) {
-					complainAboutInitializedFinalFields(flowInfo, constructorCall);
-				}
 				if ((complaintLevel = stat.complainIfUnreachable(flowInfo, this.scope, complaintLevel, true)) < Statement.COMPLAINED_UNREACHABLE) {
 					flowInfo = stat.analyseCode(this.scope, constructorContext, flowInfo);
 				}
@@ -215,21 +182,15 @@ public void analyseCode(ClassScope classScope, InitializationFlowContext initial
 				if (compilerOptions.analyseResourceLeaks) {
 					FakedTrackingVariable.cleanUpUnassigned(this.scope, stat, flowInfo, false);
 				}
-				if (stat == constructorCall) {
-					if (mode == PROLOGUE_ANALYSIS) {
-						// stash away prologue info for subsequent phase. It also signals the need for EPILOGUE analysis
-						this.prologueInfo = (constructorCall == this.statements[0]) ? (hasArgumentNeedingAnalysis ? flowInfo.copy() : this.prologueInfo) : flowInfo;
-						return;	 // we're done with prologue
-					}
-					if (constructorCall == this.statements[0]) { // early constructor
-						markFieldsAsInitializedAfterThisCall(earlyConstructorCall, flowInfo);
-					}
-					flowInfo.setReachMode(nonStaticFieldInfoReachMode); // At start of epilogue. Reuse the reachMode from non static field info
+				if (stat instanceof ExplicitConstructorCall) {
+					constructorCall = (ExplicitConstructorCall) stat;
+					if (constructorCall.accessMode == ExplicitConstructorCall.This)
+						markFieldsAsInitializedAfterThisCall(constructorCall, flowInfo);
+					else
+						flowInfo = analyzeFieldInitializations(classScope, initializerFlowContext, flowInfo);
 				}
 			}
 		}
-
-		// *** Prologue analysis DOES NOT reach here ***
 
 		if ((flowInfo.tagBits & FlowInfo.UNREACHABLE_OR_DEAD) == 0) { // don't fall through the constructor!
 			this.bits |= ASTNode.NeedFreeReturn;
@@ -282,27 +243,18 @@ public void analyseCode(ClassScope classScope, InitializationFlowContext initial
 }
 
 private void markFieldsAsInitializedAfterThisCall(ExplicitConstructorCall call, FlowInfo flowInfo) {
-	if (call.accessMode == ExplicitConstructorCall.This) {
-		// if calling 'this(...)', then flag all non-static fields as definitely
-		// set since they are supposed to be set inside other local constructor
-		FieldBinding[] fields = this.binding.declaringClass.fields();
-		for (FieldBinding field : fields) {
-			if (!field.isStatic()) {
-				flowInfo.markAsDefinitelyAssigned(field);
-			}
-		}
-	}
-}
 
-private void complainAboutInitializedFinalFields(FlowInfo flowInfo, ExplicitConstructorCall call) {
-	if (call.accessMode == ExplicitConstructorCall.This) {
-		// if calling 'this(...)', complain about final fields that are already assigned
-		FieldBinding[] fields = this.binding.declaringClass.fields();
-		for (FieldBinding field : fields) {
-			if (field.isBlankFinal() && !field.isStatic()) {
-				if (flowInfo.isPotentiallyAssigned(field))
-					this.scope.problemReporter().duplicateInitializationOfBlankFinalField(field, call);
-			}
+	/* We are chaining to `this(...)': Flag all non-static fields as definitely assigned
+       since they are supposed to be set inside the alternate constructor. Which also means
+       any final fields that are already assigned in the current prologue will result in
+       duplicate initialization.
+	*/
+	FieldBinding[] fields = this.binding.declaringClass.fields();
+	for (FieldBinding field : fields) {
+		if (!field.isStatic()) {
+			if (field.isBlankFinal() && flowInfo.isPotentiallyAssigned(field))
+				this.scope.problemReporter().duplicateInitializationOfBlankFinalField(field, call);
+			flowInfo.markAsDefinitelyAssigned(field);
 		}
 	}
 }
@@ -589,6 +541,11 @@ public boolean isConstructor() {
 	return true;
 }
 
+public boolean invokesSuper() {
+	ExplicitConstructorCall constructorCall = getConstructorCall();
+	return constructorCall != null && constructorCall.accessMode != ExplicitConstructorCall.This;
+}
+
 @Override
 public boolean isCanonicalConstructor() {
 	return (this.bits & ASTNode.IsCanonicalConstructor) != 0;
@@ -759,16 +716,6 @@ public ExplicitConstructorCall getConstructorCall() {
 		}
 	}
 	return null;
-}
-
-// returns what would have have been captured in `this.constructorCall` in earlier days
-public ExplicitConstructorCall getEarlyConstructorCall() {
-	return this.statements != null && this.statements.length > 0 && this.statements[0] instanceof ExplicitConstructorCall ecc ? ecc : null;
-}
-
-// returns strictly a late constructor chaining call.
-public ExplicitConstructorCall getLateConstructorCall() {
-	return getEarlyConstructorCall() != null ? null : getConstructorCall();
 }
 
 public final void chainUpwards() {
