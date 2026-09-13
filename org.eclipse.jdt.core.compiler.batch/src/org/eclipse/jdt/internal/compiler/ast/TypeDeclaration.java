@@ -766,12 +766,16 @@ private void internalAnalyseCode(FlowContext flowContext, FlowInfo flowInfo) {
 				}
 			}
 			if (prologueInfo != null) {
-				// DAs from EVERY constructor prologue should carry over to main flow info, while potential inits should flow into companion only.
-				for (FieldBinding field : this.binding.fields()) {
-					if (prologueInfo.isDefinitelyAssigned(field))
-						nonStaticFieldInfo.markAsDefinitelyAssigned(field);
+				if ((prologueInfo.reachMode() & FlowInfo.UNREACHABLE_OR_DEAD) != 0) {
+					nonStaticFieldInfo.setReachMode(FlowInfo.UNREACHABLE_OR_DEAD); // don't pollute otherwise, nothing else flows from above.
+				} else {
+					// DAs from EVERY constructor prologue should carry over to main flow info, while potential inits should flow into companion only.
+					for (FieldBinding field : this.binding.fields()) {
+						if (prologueInfo.isDefinitelyAssigned(field))
+							nonStaticFieldInfo.markAsDefinitelyAssigned(field);
+					}
+					nonStaticFieldInfo = new DualFlowInfo(nonStaticFieldInfo, prologueInfo);
 				}
-				nonStaticFieldInfo = new DualFlowInfo(nonStaticFieldInfo, prologueInfo);
 			}
 		}
 	}
