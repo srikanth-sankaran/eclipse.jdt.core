@@ -4018,5 +4018,43 @@ public class SuperAfterStatementsTest extends AbstractRegressionTest9 {
 		"initialized\n" +
 		"modified");
 	}
+
+	// https://github.com/eclipse-jdt/eclipse.jdt.core/issues/5404
+	// [Flexible constructors] Incorrect diagnostic: The final field x may already have been assigned
+	public void testIssue5404() {
+		runConformTest(new String[] {
+			"X.java",
+			"""
+			public final class X {
+				final int x; // 1
+				final int y; // 2
+				final int z; // 4
+
+				{
+					x = 10;
+					z = y;
+				}
+
+				X() {
+					int xx = 123; // 8
+					if (true)
+						throw new RuntimeException();
+					super();
+				}
+
+				X(int a) {
+					this.y = 10;
+					if (true)
+						throw new RuntimeException();
+					super();
+				}
+				public static void main(String [] args) {
+				    System.out.println("Ok!");
+			    }
+			}
+			"""
+		},
+		"Ok!");
+	}
 }
 
